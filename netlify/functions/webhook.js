@@ -43,7 +43,9 @@ async function handleEvent(lineEvent) {
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: userText }],
     });
-    intent = JSON.parse(intentResp.content[0].text);
+    let rawText = intentResp.content[0].text.trim();
+   rawText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+   intent = JSON.parse(rawText);
   } catch (err) {
     console.error('Intent parsing failed', err);
     return lineClient.replyMessage(lineEvent.replyToken, {
