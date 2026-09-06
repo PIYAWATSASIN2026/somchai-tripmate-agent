@@ -1,0 +1,10 @@
+{
+  "name": "somchai-tripmate-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LINE lifestyle assistant backend — webhook + Claude API + deep links",
+  "dependencies": {
+    "@line/bot-sdk": "^9.4.0",
+    "@anthropic-ai/sdk": "^0.32.0"
+  }
+}
