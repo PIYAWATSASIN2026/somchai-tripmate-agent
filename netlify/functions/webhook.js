@@ -45,7 +45,7 @@ const SYSTEM_PROMPT = `คุณคือ "AI Front-Desk Assistant" ผู้ช
    b) ข้อมูลเฉพาะเจาะจง — ปลายทาง, งบประมาณ, ช่วงเวลา/วันที่, จำนวนคน, เงื่อนไขสำคัญอื่นๆ
    c) รูปแบบผลลัพธ์ที่ต้องการ — เช่น สรุปสั้นๆ, ตารางเปรียบเทียบ, หรือลิสต์รายชื่อ (ถ้าผู้ใช้ไม่ระบุ ให้ถือว่าต้องการสรุปสั้นพร้อมลิงก์ ไม่ต้องถามซ้ำ)
 3. ถ้าข้อมูลยังไม่ครบ ให้ถามคำถามที่เจาะจง 1-2 ข้อในการตอบแต่ละครั้งเท่านั้น และตอบเป็นข้อความสนทนาธรรมดา ห้ามใส่ JSON หรือคำว่า ${READY_MARKER} ปนอยู่ในคำตอบระหว่างที่ข้อมูลยังไม่ครบ
-4. เมื่อข้อมูลครบถ้วนแล้ว ให้ตอบครั้งเดียวด้วยข้อความที่ขึ้นต้นด้วย ${READY_MARKER} ตามด้วย JSON ล้วนๆ เท่านั้น (ห้ามมีข้อความอื่นนอกเหนือจาก JSON ปนอยู่ ห้ามใช้ markdown code fence) ตามรูปแบบนี้เป๊ะๆ:
+4. เมื่อข้อมูลครบถ้วนแล้ว ให้ตอบครั้งเดียวด้วยข้อความที่ขึ้นต้นด้วย ${READY_MARKER} เป็นตัวอักษรตัวแรกสุดของข้อความเป๊ะๆ ตามด้วย JSON ล้วนๆ เท่านั้น ห้ามมีข้อความทักทาย คำขอบคุณ หรือคำนำใดๆ อยู่ก่อนหน้า ${READY_MARKER} เด็ดขาด (ห้ามมีข้อความอื่นนอกเหนือจาก JSON ปนอยู่เลย ห้ามใช้ markdown code fence) ตามรูปแบบนี้เป๊ะๆ:
 ${READY_MARKER}
 {"destination":"ชื่อสถานที่หรือย่าน","checkin":"YYYY-MM-DD หรือค่าว่าง","checkout":"YYYY-MM-DD หรือค่าว่าง","guests":จำนวนตัวเลข,"budget":ตัวเลขหรือ null,"categories":["เลือกจาก hotel|flight|tour|restaurant|fitness|event อย่างน้อย 1 หมวด"],"output_format":"summary|comparison|list","language":"th หรือ en","reply_text":"ข้อความแผนการเดินทางแบบเจาะจงเป็นรายวัน (ดูกติกาข้อ 7)"}
 5. เมื่อผู้ใช้ต้องการวางแผนการเดินทาง (เช่น จะไปเที่ยว) ให้ categories ครอบคลุมโซลูชันแบบครบวงจรในคราวเดียว (ที่พัก + ตั๋วเครื่องบิน + ทัวร์/กิจกรรม ตามความเกี่ยวข้อง) ไม่ใช่ตอบแค่หมวดเดียว เว้นแต่ผู้ใช้ระบุชัดเจนว่าต้องการแค่อย่างเดียว
@@ -146,8 +146,9 @@ async function handleEvent(lineEvent) {
     }
     const replyRaw = textBlock.text.trim();
 
-    if (replyRaw.startsWith(READY_MARKER)) {
-      const jsonPart = replyRaw.slice(READY_MARKER.length).trim();
+    const markerIndex = replyRaw.indexOf(READY_MARKER);
+    if (markerIndex !== -1) {
+      const jsonPart = replyRaw.slice(markerIndex + READY_MARKER.length).trim();
       const intent = JSON.parse(stripCodeFence(jsonPart));
 
       if (userId) await clearHistory(userId);
