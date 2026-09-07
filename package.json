@@ -5,6 +5,7 @@
   "description": "LINE lifestyle assistant backend — webhook + Claude API + deep links",
   "dependencies": {
     "@line/bot-sdk": "^9.4.0",
-    "@anthropic-ai/sdk": "^0.32.0"
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@netlify/blobs": "^8.1.0"
   }
 }
