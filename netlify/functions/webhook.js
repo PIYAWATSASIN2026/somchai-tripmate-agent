@@ -134,7 +134,8 @@ async function handleEvent(lineEvent) {
 
     const resp = await anthropic.messages.create({
       model: 'claude-sonnet-5',
-      max_tokens: 1500, // itinerary-style reply_text needs more room than a short confirmation
+      max_tokens: 3000, // itinerary-style reply_text needs more room than a short confirmation
+      thinking: { type: 'disabled' }, // extended thinking was silently eating the token budget, leaving no room for the actual reply
       system: SYSTEM_PROMPT,
       messages,
     });
