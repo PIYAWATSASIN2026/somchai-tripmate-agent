@@ -47,9 +47,15 @@ const SYSTEM_PROMPT = `คุณคือ "AI Front-Desk Assistant" ผู้ช
 3. ถ้าข้อมูลยังไม่ครบ ให้ถามคำถามที่เจาะจง 1-2 ข้อในการตอบแต่ละครั้งเท่านั้น และตอบเป็นข้อความสนทนาธรรมดา ห้ามใส่ JSON หรือคำว่า ${READY_MARKER} ปนอยู่ในคำตอบระหว่างที่ข้อมูลยังไม่ครบ
 4. เมื่อข้อมูลครบถ้วนแล้ว ให้ตอบครั้งเดียวด้วยข้อความที่ขึ้นต้นด้วย ${READY_MARKER} ตามด้วย JSON ล้วนๆ เท่านั้น (ห้ามมีข้อความอื่นนอกเหนือจาก JSON ปนอยู่ ห้ามใช้ markdown code fence) ตามรูปแบบนี้เป๊ะๆ:
 ${READY_MARKER}
-{"destination":"ชื่อสถานที่หรือย่าน","checkin":"YYYY-MM-DD หรือค่าว่าง","checkout":"YYYY-MM-DD หรือค่าว่าง","guests":จำนวนตัวเลข,"budget":ตัวเลขหรือ null,"categories":["เลือกจาก hotel|flight|tour|restaurant|fitness|event อย่างน้อย 1 หมวด"],"output_format":"summary|comparison|list","language":"th หรือ en","reply_text":"ข้อความสรุปสั้นๆ ที่จะตอบผู้ใช้ก่อนโชว์ตัวเลือก"}
+{"destination":"ชื่อสถานที่หรือย่าน","checkin":"YYYY-MM-DD หรือค่าว่าง","checkout":"YYYY-MM-DD หรือค่าว่าง","guests":จำนวนตัวเลข,"budget":ตัวเลขหรือ null,"categories":["เลือกจาก hotel|flight|tour|restaurant|fitness|event อย่างน้อย 1 หมวด"],"output_format":"summary|comparison|list","language":"th หรือ en","reply_text":"ข้อความแผนการเดินทางแบบเจาะจงเป็นรายวัน (ดูกติกาข้อ 7)"}
 5. เมื่อผู้ใช้ต้องการวางแผนการเดินทาง (เช่น จะไปเที่ยว) ให้ categories ครอบคลุมโซลูชันแบบครบวงจรในคราวเดียว (ที่พัก + ตั๋วเครื่องบิน + ทัวร์/กิจกรรม ตามความเกี่ยวข้อง) ไม่ใช่ตอบแค่หมวดเดียว เว้นแต่ผู้ใช้ระบุชัดเจนว่าต้องการแค่อย่างเดียว
-6. ถ้าผู้ใช้พิมพ์เป็นภาษาอังกฤษ ให้ตอบเป็นภาษาอังกฤษทั้งหมด (รวมถึง reply_text และ language ใน JSON ตอนสรุป ให้ตั้งเป็น "en")`;
+6. ถ้าผู้ใช้พิมพ์เป็นภาษาอังกฤษ ให้ตอบเป็นภาษาอังกฤษทั้งหมด (รวมถึง reply_text และ language ใน JSON ตอนสรุป ให้ตั้งเป็น "en")
+7. reply_text ต้องเป็น "แผนการเดินทางที่ปรึกษาให้จริง" ไม่ใช่ข้อความทั่วไปแบบ "กำลังหาตัวเลือกให้นะครับ" ต้องมีสาระดังนี้:
+   - แบ่งเป็นรายวัน (Day 1 / Day 2 / Day 3 ...) ตามจำนวนวันที่ผู้ใช้ระบุ แต่ละวันแบ่งเป็นช่วงเช้า/บ่าย/เย็น
+   - อ้างอิงสถานที่ กิจกรรม หรือร้านที่มีอยู่จริงในจุดหมายปลายทางนั้น (เช่น วัด ตลาด คาเฟ่ จุดชมวิว ถนนดนตรี) ให้ตรงกับความสนใจที่ผู้ใช้บอก (เช่น ไหว้พระ ฟังดนตรี กินกาแฟ) ห้ามเขียนลอยๆ แบบไม่เจาะจง
+   - คำนึงถึงงบประมาณที่ผู้ใช้ให้ไว้ด้วย (เช่น เลือกกิจกรรม/ร้านที่ราคาเหมาะสมกับงบ)
+   - ปิดท้ายสั้นๆ ว่าเดี๋ยวจะโชว์ตัวเลือกที่พัก/ตั๋ว/ทัวร์ให้เลือกจองด้านล่าง
+   - ความยาวพอเหมาะ (ประมาณ 150-300 คำ) ใช้บรรทัดใหม่แบ่งหัวข้อให้อ่านง่ายใน LINE ไม่ใช่ย่อหน้าเดียวยาวๆ`;
 
 exports.handler = async (event) => {
   const signature = event.headers['x-line-signature'] || event.headers['X-Line-Signature'];
@@ -128,7 +134,7 @@ async function handleEvent(lineEvent) {
 
     const resp = await anthropic.messages.create({
       model: 'claude-sonnet-5',
-      max_tokens: 700,
+      max_tokens: 1500, // itinerary-style reply_text needs more room than a short confirmation
       system: SYSTEM_PROMPT,
       messages,
     });
@@ -212,16 +218,39 @@ function buildFlexBubble(intent, category, label, lang) {
       layout: 'vertical',
       spacing: 'sm',
       contents: [
-        { type: 'text', text: label, size: 'xs', color: '#06C755', weight: 'bold' },
-        { type: 'text', text: intent.destination || label, weight: 'bold', size: 'md', wrap: true },
-        { type: 'text', text: budgetText, size: 'sm', color: '#5B5B5B', wrap: true },
+        {
+          type: 'text',
+          text: label,
+          size: 'xs',
+          color: '#06C755',
+          weight: 'bold',
+        },
+        {
+          type: 'text',
+          text: intent.destination || label,
+          weight: 'bold',
+          size: 'md',
+          wrap: true,
+        },
+        {
+          type: 'text',
+          text: budgetText,
+          size: 'sm',
+          color: '#5B5B5B',
+          wrap: true,
+        },
       ],
     },
     footer: {
       type: 'box',
       layout: 'vertical',
       contents: [
-        { type: 'button', style: 'primary', color: '#06C755', action: { type: 'uri', label: buttonLabel, uri: url } },
+        {
+          type: 'button',
+          style: 'primary',
+          color: '#06C755',
+          action: { type: 'uri', label: buttonLabel, uri: url },
+        },
       ],
     },
   };
