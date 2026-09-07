@@ -1,5 +1,6 @@
 const line = require('@line/bot-sdk');
 const Anthropic = require('@anthropic-ai/sdk');
+const { getStore } = require('@netlify/blobs');
 const { buildDeepLink } = require('../../lib/deepLinks');
 
 const lineConfig = {
@@ -10,10 +11,45 @@ const lineConfig = {
 const lineClient = new line.Client(lineConfig);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const SYSTEM_PROMPT = `คุณคือ Somchai TripMate ผู้ช่วยไลฟ์สไตล์บน LINE
-แยกความต้องการของผู้ใช้ออกมาเป็น JSON เท่านั้น ห้ามมีข้อความอื่นนอกเหนือจาก JSON
-รูปแบบที่ต้องตอบกลับเป๊ะ ๆ:
-{"category":"hotel|flight|tour|restaurant|fitness|event","destination":"ชื่อสถานที่หรือย่าน","checkin":"YYYY-MM-DD หรือค่าว่าง","checkout":"YYYY-MM-DD หรือค่าว่าง","guests":จำนวนตัวเลข,"budget":ตัวเลขหรือ null,"reply_text":"ข้อความสั้น ๆ ที่จะตอบผู้ใช้ก่อนโชว์ตัวเลือก"}`;
+const READY_MARKER = '[READY_FOR_AGENT]';
+const CONVO_TTL_MS = 30 * 60 * 1000; // reset conversation after 30 min of silence
+const MAX_HISTORY_MESSAGES = 16; // keep context small / cheap
+
+const CATEGORY_LABELS = {
+  th: {
+    hotel: 'ที่พัก',
+    flight: 'ตั๋วเครื่องบิน',
+    tour: 'ทัวร์ / กิจกรรม',
+    restaurant: 'ร้านอาหาร',
+    fitness: 'ฟิตเนส',
+    event: 'อีเวนต์',
+  },
+  en: {
+    hotel: 'Hotel',
+    flight: 'Flight',
+    tour: 'Tour / Activity',
+    restaurant: 'Restaurant',
+    fitness: 'Fitness',
+    event: 'Event',
+  },
+};
+
+const SYSTEM_PROMPT = `คุณคือ "AI Front-Desk Assistant" ผู้ช่วยต้อนรับของ Somchai TripMate มีหน้าที่พูดคุยกับผู้ใช้เพื่อรวบรวมความต้องการด้านการเดินทาง/ไลฟ์สไตล์ให้ครบถ้วน ก่อนส่งต่อให้ระบบค้นหาข้อมูลด้านหลัง (Agent) ทำงานต่อ
+
+บุคลิก: คุณคือแอดมินเพศชาย ใช้น้ำเสียงและคำลงท้ายแบบผู้ชายเสมอ (เช่น "ครับ", "ผม") ห้ามใช้คำลงท้ายเพศหญิงเด็ดขาด
+
+กติกาการสนทนา:
+1. ห้ามสรุปหรือส่งข้อมูลไปประมวลผลทันทีตั้งแต่ข้อความแรก ให้พูดคุยไปทีละประเด็นอย่างเป็นกันเอง ไม่ถามรวดเดียวหลายเรื่องจนผู้ใช้อึดอัด
+2. ต้องรวบรวมข้อมูลให้ครบ 3 อย่างก่อนสรุปงาน:
+   a) จุดประสงค์หลัก — ผู้ใช้ต้องการหาอะไร/ทำอะไร (ที่พัก, ตั๋วเครื่องบิน, ทัวร์, ร้านอาหาร, ฟิตเนส, อีเวนต์ หรือหลายอย่างรวมกัน)
+   b) ข้อมูลเฉพาะเจาะจง — ปลายทาง, งบประมาณ, ช่วงเวลา/วันที่, จำนวนคน, เงื่อนไขสำคัญอื่นๆ
+   c) รูปแบบผลลัพธ์ที่ต้องการ — เช่น สรุปสั้นๆ, ตารางเปรียบเทียบ, หรือลิสต์รายชื่อ (ถ้าผู้ใช้ไม่ระบุ ให้ถือว่าต้องการสรุปสั้นพร้อมลิงก์ ไม่ต้องถามซ้ำ)
+3. ถ้าข้อมูลยังไม่ครบ ให้ถามคำถามที่เจาะจง 1-2 ข้อในการตอบแต่ละครั้งเท่านั้น และตอบเป็นข้อความสนทนาธรรมดา ห้ามใส่ JSON หรือคำว่า ${READY_MARKER} ปนอยู่ในคำตอบระหว่างที่ข้อมูลยังไม่ครบ
+4. เมื่อข้อมูลครบถ้วนแล้ว ให้ตอบครั้งเดียวด้วยข้อความที่ขึ้นต้นด้วย ${READY_MARKER} ตามด้วย JSON ล้วนๆ เท่านั้น (ห้ามมีข้อความอื่นนอกเหนือจาก JSON ปนอยู่ ห้ามใช้ markdown code fence) ตามรูปแบบนี้เป๊ะๆ:
+${READY_MARKER}
+{"destination":"ชื่อสถานที่หรือย่าน","checkin":"YYYY-MM-DD หรือค่าว่าง","checkout":"YYYY-MM-DD หรือค่าว่าง","guests":จำนวนตัวเลข,"budget":ตัวเลขหรือ null,"categories":["เลือกจาก hotel|flight|tour|restaurant|fitness|event อย่างน้อย 1 หมวด"],"output_format":"summary|comparison|list","language":"th หรือ en","reply_text":"ข้อความสรุปสั้นๆ ที่จะตอบผู้ใช้ก่อนโชว์ตัวเลือก"}
+5. เมื่อผู้ใช้ต้องการวางแผนการเดินทาง (เช่น จะไปเที่ยว) ให้ categories ครอบคลุมโซลูชันแบบครบวงจรในคราวเดียว (ที่พัก + ตั๋วเครื่องบิน + ทัวร์/กิจกรรม ตามความเกี่ยวข้อง) ไม่ใช่ตอบแค่หมวดเดียว เว้นแต่ผู้ใช้ระบุชัดเจนว่าต้องการแค่อย่างเดียว
+6. ถ้าผู้ใช้พิมพ์เป็นภาษาอังกฤษ ให้ตอบเป็นภาษาอังกฤษทั้งหมด (รวมถึง reply_text และ language ใน JSON ตอนสรุป ให้ตั้งเป็น "en")`;
 
 exports.handler = async (event) => {
   const signature = event.headers['x-line-signature'] || event.headers['X-Line-Signature'];
@@ -28,83 +64,158 @@ exports.handler = async (event) => {
   return { statusCode: 200, body: 'OK' };
 };
 
+function getConvoStore() {
+  return getStore('conversations');
+}
+
+async function loadHistory(userId) {
+  const store = getConvoStore();
+  const record = await store.get(userId, { type: 'json' }).catch(() => null);
+  if (!record || !record.updatedAt || Date.now() - record.updatedAt > CONVO_TTL_MS) {
+    return [];
+  }
+  return record.messages || [];
+}
+
+async function saveHistory(userId, messages) {
+  const store = getConvoStore();
+  const trimmed = messages.slice(-MAX_HISTORY_MESSAGES);
+  await store.setJSON(userId, { updatedAt: Date.now(), messages: trimmed });
+}
+
+async function clearHistory(userId) {
+  const store = getConvoStore();
+  await store.delete(userId).catch(() => null);
+}
+
 async function handleEvent(lineEvent) {
   if (lineEvent.type !== 'message' || lineEvent.message.type !== 'text') {
     return null;
   }
 
+  const userId = lineEvent.source && lineEvent.source.userId;
   const userText = lineEvent.message.text;
-  let intent;
 
   try {
-    const intentResp = await anthropic.messages.create({
+    const history = userId ? await loadHistory(userId) : [];
+    const messages = [...history, { role: 'user', content: userText }];
+
+    const resp = await anthropic.messages.create({
       model: 'claude-sonnet-5',
-      max_tokens: 400,
+      max_tokens: 700,
       system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userText }],
+      messages,
     });
-    let rawText = intentResp.content[0].text.trim();
-   rawText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-   intent = JSON.parse(rawText);
+
+    const replyRaw = resp.content[0].text.trim();
+
+    if (replyRaw.startsWith(READY_MARKER)) {
+      const jsonPart = replyRaw.slice(READY_MARKER.length).trim();
+      const intent = JSON.parse(stripCodeFence(jsonPart));
+
+      if (userId) await clearHistory(userId);
+
+      const outMessages = [];
+      if (intent.reply_text) {
+        outMessages.push({ type: 'text', text: intent.reply_text });
+      }
+      outMessages.push(buildFlexCarousel(intent));
+
+      return lineClient.replyMessage(lineEvent.replyToken, outMessages);
+    }
+
+    // Still gathering requirements — plain conversational reply, remember the turn.
+    if (userId) {
+      await saveHistory(userId, [
+        ...messages,
+        { role: 'assistant', content: replyRaw },
+      ]);
+    }
+
+    return lineClient.replyMessage(lineEvent.replyToken, { type: 'text', text: replyRaw });
   } catch (err) {
-    console.error('Intent parsing failed', err);
+    console.error('Front-desk conversation failed', err);
     return lineClient.replyMessage(lineEvent.replyToken, {
       type: 'text',
-      text: 'ขอโทษครับ ช่วยพิมพ์รายละเอียดอีกครั้งได้ไหมครับ เช่น ปลายทาง วันที่ จำนวนคน',
+      text: 'ขอโทษครับ ระบบมีปัญหาชั่วคราว ช่วยพิมพ์อีกครั้งได้ไหมครับ',
     });
   }
-
-  const bookingUrl = buildDeepLink(intent);
-  const flexMessage = buildFlexBubble(intent, bookingUrl);
-
-  const messages = [];
-  if (intent.reply_text) {
-    messages.push({ type: 'text', text: intent.reply_text });
-  }
-  messages.push(flexMessage);
-
-  return lineClient.replyMessage(lineEvent.replyToken, messages);
 }
 
-function buildFlexBubble(intent, url) {
+function stripCodeFence(text) {
+  return text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+}
+
+function buildFlexCarousel(intent) {
+  const lang = intent.language === 'en' ? 'en' : 'th';
+  const labels = CATEGORY_LABELS[lang];
+  const categories = Array.isArray(intent.categories) && intent.categories.length
+    ? intent.categories
+    : [intent.category].filter(Boolean);
+
+  const bubbles = categories
+    .filter((c) => labels[c])
+    .slice(0, 10) // LINE carousel limit
+    .map((category) => buildFlexBubble(intent, category, labels[category], lang));
+
   return {
     type: 'flex',
-    altText: 'ตัวเลือกที่แนะนำ',
+    altText: lang === 'en' ? 'Recommended options' : 'ตัวเลือกที่แนะนำ',
     contents: {
-      type: 'bubble',
-      body: {
-        type: 'box',
-        layout: 'vertical',
-        spacing: 'sm',
-        contents: [
-          {
-            type: 'text',
-            text: intent.destination || 'ตัวเลือกที่แนะนำ',
-            weight: 'bold',
-            size: 'md',
-            wrap: true,
-          },
-          {
-            type: 'text',
-            text: intent.budget ? `งบประมาณโดยประมาณ ${intent.budget} บาท` : 'ดูรายละเอียดและราคาที่หน้าเว็บ',
-            size: 'sm',
-            color: '#5B5B5B',
-            wrap: true,
-          },
-        ],
-      },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        contents: [
-          {
-            type: 'button',
-            style: 'primary',
-            color: '#06C755',
-            action: { type: 'uri', label: 'ดูตัวเลือก', uri: url },
-          },
-        ],
-      },
+      type: 'carousel',
+      contents: bubbles,
+    },
+  };
+}
+
+function buildFlexBubble(intent, category, label, lang) {
+  const url = buildDeepLink({ ...intent, category });
+  const budgetText = intent.budget
+    ? (lang === 'en' ? `Est. budget ${intent.budget} THB` : `งบประมาณโดยประมาณ ${intent.budget} บาท`)
+    : (lang === 'en' ? 'See details and pricing on the site' : 'ดูรายละเอียดและราคาที่หน้าเว็บ');
+  const buttonLabel = lang === 'en' ? 'View options' : 'ดูตัวเลือก';
+
+  return {
+    type: 'bubble',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'text',
+          text: label,
+          size: 'xs',
+          color: '#06C755',
+          weight: 'bold',
+        },
+        {
+          type: 'text',
+          text: intent.destination || label,
+          weight: 'bold',
+          size: 'md',
+          wrap: true,
+        },
+        {
+          type: 'text',
+          text: budgetText,
+          size: 'sm',
+          color: '#5B5B5B',
+          wrap: true,
+        },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        {
+          type: 'button',
+          style: 'primary',
+          color: '#06C755',
+          action: { type: 'uri', label: buttonLabel, uri: url },
+        },
+      ],
     },
   };
 }
